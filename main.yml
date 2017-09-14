@@ -1,0 +1,128 @@
+---
+- hosts: digitalocean
+  tasks:
+      - name: Create droplet
+        digital_ocean:
+          state: present
+          command: droplet
+          name: openshift
+          unique_name: yes
+          size_id: 2gb
+          region_id: blr1
+          image_id: centos-7-x64
+          ssh_key_ids: 1976557
+        register: do
+
+      - debug:
+          msg: "IP address of the DO droplet {{ do.droplet.ip_address }}"
+
+      - name: Add new host to inventory
+        add_host:
+            name: "{{ do.droplet.ip_address }}"
+            groups: do
+        when: do.droplet is defined
+
+- hosts: do
+  remote_user: root
+  gather_facts: false
+  tasks:
+      - name: Set SELinux Enforcing
+        selinux:
+            policy: targeted
+            state: enforcing
+        register: selinux
+
+      - name: Restart host
+        command: /sbin/shutdown -r +1 
+        when: selinux.changed
+
+      - name: Wait for server to be online
+        wait_for_connection:
+            delay: 70
+        when: selinux.changed
+
+      - name: Install Docker, epel-release
+        yum: name={{ item }} state=latest
+        with_items:
+            - docker
+            - epel-release
+
+      - name: Install python-pip
+        yum: name=python-pip state=latest
+
+      - name: Install docker-py module through pip
+        pip: name=docker-py
+
+      - name: Enable insecure registry in Docker for OpenShift
+        replace: >
+            dest=/etc/sysconfig/docker
+            regexp="^#*\s*INSECURE_REGISTRY=.*"
+            replace='INSECURE_REGISTRY="--insecure-registry 172.30.0.0/16"'
+
+      - name: Start Docker daemon
+        systemd: name=docker state=started enabled=yes
+      
+      - name: Create OpenShift origin container
+        docker_container:
+            name: origin
+            image: docker.io/openshift/origin:v3.6.0
+            privileged: yes
+            pid_mode: host
+            network_mode: host
+            volumes:
+                - /:/rootfs:ro
+                - /var/run:/var/run:rw
+                - /sys:/sys
+                - /sys/fs/cgroup:/sys/fs/cgroup:rw
+                - /var/lib/docker:/var/lib/docker:rw
+                - /var/lib/origin/openshift.local.volumes:/var/lib/origin/openshift.local.volumes:rslave
+                - /var/lib/origin/openshift.local.config:/var/lib/origin/openshift.local.config:rw
+                - /var/lib/origin/openshift.local.etcd:/var/lib/origin/openshift.local.etcd:rw
+            command: start --master=https://"{{ groups['do'][0] }}":8443
+            restart_policy: always
+            restart_retries: 2
+
+      - name: Wait for Openshift to come up
+        pause: seconds=60
+
+      - name: Copy Openshift binaries
+        command: docker cp origin:/usr/bin/openshift {{item}}
+        with_items:
+          - /usr/bin/oc
+          - /usr/bin/oadm
+      
+      - name: Ensure openshift binaries are executable
+        file: dest="{{ item }}" mode="a+x"
+        with_items:
+          - /usr/bin/oc
+          - /usr/bin/oadm
+      
+      - name: Set perms for kubeconfig
+        file: dest=/var/lib/origin/openshift.local.config/master/admin.kubeconfig mode="go+r"
+
+      - name: Setup openshift registry
+        command: "{{item}}"
+        with_items:
+          - oc adm registry --config=/var/lib/origin/openshift.local.config/master/admin.kubeconfig
+            # - oadm policy add-scc-to-group anyuid system:authenticated
+        environment:
+          KUBECONFIG: /var/lib/origin/openshift.local.config/master/admin.kubeconfig
+      
+      - name: Wait for Openshift Registry to come up
+        pause: seconds=60
+
+      - name: Give cluster-admin rights to test-admin user
+        command: "{{ item }}"
+        with_items:
+          - "oc adm policy add-cluster-role-to-user cluster-admin test-admin --config=$KUBECONFIG"
+          - "oc login --certificate-authority=/var/lib/origin/openshift.local.config/master/ca.crt -u test-admin -p admin"
+        environment:
+          KUBECONFIG: /var/lib/origin/openshift.local.config/master/admin.kubeconfig
+
+      - name: Setup new project and digitalocean-compass app in it
+        command: "{{ item }}"
+        with_items:
+            - "oc new-project compass"
+            - "oc new-app --strategy docker dharmit/digitalocean-compass~https://github.com/dharmit/digitalocean-compass --name do-compass"
+        environment:
+            CURL_CA_BUNDLE=/var/lib/origin/openshift.local.config/master/ca.crt

@@ -1,0 +1,13 @@
+---
+- hosts: digitalocean
+  tasks:
+      - name: Setup SSH keys
+        digital_ocean:
+          state: present
+          command: ssh
+          name: fedora
+          ssh_pub_key: "{{ ssh_public_key }}"
+        register: ssh_key_id
+
+      - debug:
+          msg: "{{ ssh_key_id.ssh_key.id }}"
