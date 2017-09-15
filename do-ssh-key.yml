@@ -6,7 +6,7 @@
           state: present
           command: ssh
           name: fedora
-          ssh_pub_key: "{{ ssh_public_key }}"
+          ssh_pub_key: $SSH_PUB_KEY
         register: ssh_key_id
 
       - debug:
