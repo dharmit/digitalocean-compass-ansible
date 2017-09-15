@@ -5,7 +5,7 @@
         digital_ocean:
           state: present
           command: droplet
-          name: openshift
+          name: digitalocean-compass
           unique_name: yes
           size_id: 2gb
           region_id: blr1
@@ -15,6 +15,10 @@
 
       - debug:
           msg: "IP address of the DO droplet {{ do.droplet.ip_address }}"
+
+      - name: Wait for server to be online
+        wait_for_connection:
+            delay: 20
 
       - name: Add new host to inventory
         add_host:
@@ -54,13 +58,12 @@
         pip: name=docker-py
 
       - name: Enable insecure registry in Docker for OpenShift
-        replace: >
-            dest=/etc/sysconfig/docker
-            regexp="^#*\s*INSECURE_REGISTRY=.*"
-            replace='INSECURE_REGISTRY="--insecure-registry 172.30.0.0/16"'
+        lineinfile:
+            path: /etc/sysconfig/docker
+            line: 'INSECURE_REGISTRY="--insecure-registry 172.30.0.0/16"'
 
       - name: Start Docker daemon
-        systemd: name=docker state=started enabled=yes
+        systemd: name=docker state=restarted enabled=yes
       
       - name: Create OpenShift origin container
         docker_container:
@@ -103,10 +106,10 @@
       - name: Setup openshift registry
         command: "{{item}}"
         with_items:
-          - oc adm registry --config=/var/lib/origin/openshift.local.config/master/admin.kubeconfig
-            # - oadm policy add-scc-to-group anyuid system:authenticated
+            - oc adm registry --config=/var/lib/origin/openshift.local.config/master/admin.kubeconfig
+              # - oadm policy add-scc-to-group anyuid system:authenticated
         environment:
-          KUBECONFIG: /var/lib/origin/openshift.local.config/master/admin.kubeconfig
+            KUBECONFIG: /var/lib/origin/openshift.local.config/master/admin.kubeconfig
       
       - name: Wait for Openshift Registry to come up
         pause: seconds=60
@@ -117,7 +120,7 @@
           - "oc adm policy add-cluster-role-to-user cluster-admin test-admin --config=$KUBECONFIG"
           - "oc login --certificate-authority=/var/lib/origin/openshift.local.config/master/ca.crt -u test-admin -p admin"
         environment:
-          KUBECONFIG: /var/lib/origin/openshift.local.config/master/admin.kubeconfig
+            KUBECONFIG: /var/lib/origin/openshift.local.config/master/admin.kubeconfig
 
       - name: Setup new project and digitalocean-compass app in it
         command: "{{ item }}"
@@ -125,4 +128,5 @@
             - "oc new-project compass"
             - "oc new-app --strategy docker dharmit/digitalocean-compass~https://github.com/dharmit/digitalocean-compass --name do-compass"
         environment:
-            CURL_CA_BUNDLE=/var/lib/origin/openshift.local.config/master/ca.crt
+            CURL_CA_BUNDLE: /var/lib/origin/openshift.local.config/master/ca.crt
+            KUBECONFIG: /var/lib/origin/openshift.local.config/master/admin.kubeconfig
